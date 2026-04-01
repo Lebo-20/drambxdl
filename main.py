@@ -230,74 +230,57 @@ async def auto_mode_loop():
             logger.info(f"🔍 Scanning for new dramas (Next scan in {interval}m)...")
             
             # --- SOURCE 1: MicroDrama ---
-            # Step 1: Check Latest Discovery Endpoints (latest)
-            dramas = await get_latest_dramas(pages=3 if is_initial_run else 1) or []
-            source = "microdrama"
+            logger.info("🔍 Scanning Source 1 (MicroDrama)...")
+            api1_dramas = await get_latest_dramas(pages=3 if is_initial_run else 1) or []
+            api1_new = [d for d in api1_dramas if str(d.get("bookId") or d.get("id") or d.get("bookid", "")) not in processed_ids]
             
-            # Step 2: Check if all dramas from API 1 are already processed
-            all_processed = True
-            if dramas:
-                for d in dramas:
-                    bid = str(d.get("bookId") or d.get("id") or d.get("bookid", ""))
-                    if bid and bid not in processed_ids:
-                        all_processed = False
-                        break
+            # --- SOURCE 2: iDrama ---
+            logger.info("🔍 Scanning Source 2 (iDrama)...")
+            api2_dramas = await get_latest_idramas() or []
+            api2_new = [d for d in api2_dramas if str(d.get("bookId") or d.get("id") or d.get("bookid", "")) not in processed_ids]
             
-            # --- SOURCE 2: iDrama Fallback ---
-            # If nothing new from API 1, check API 2 (iDrama)
-            if not dramas or (all_processed and not is_initial_run):
-                logger.info("🔎 API 1 (MicroDrama) has no new updates. Checking API 2 (iDrama)...")
-                api2_dramas = await get_latest_idramas()
-                
-                # Filter new from API 2
-                api2_new = [d for d in api2_dramas if str(d.get("bookId") or d.get("id") or d.get("bookid", "")) not in processed_ids]
-                if api2_new:
-                    dramas = api2_new
-                    source = "idrama"
-                    all_processed = False
-                    logger.info(f"✨ Found {len(api2_new)} new dramas in API 2 (iDrama)!")
-                else:
-                    logger.info("😴 API 2 (iDrama) also has no new updates.")
+            # --- SYSTEM INTERLEAVED (Seling-Seling) ---
+            # Menggabungkan hasil dengan urutan selang-seling: S1, S2, S1, S2...
+            queue = [] # List of (drama_obj, source_name)
+            i, j = 0, 0
+            while i < len(api1_new) or j < len(api2_new):
+                if i < len(api1_new):
+                    queue.append((api1_new[i], "microdrama"))
+                    i += 1
+                if j < len(api2_new):
+                    queue.append((api2_new[j], "idrama"))
+                    j += 1
             
-            # --- SOURCE 3: Popular Random Fallback (Filler) ---
-            # If still nothing new found, try Popular Search Random Fill
-            if (not dramas or all_processed) and not is_initial_run:
+            # --- FALLBACK: Popular Search (Jika keduanya kosong) ---
+            if not queue and not is_initial_run:
                 logger.info("ℹ️ Both APIs up to date. Fetching Popular Search fallback...")
                 pop_dramas = await get_latest_dramas(pages=1, types=["populersearch"]) or []
-                if pop_dramas:
-                    # Filter only the ones NOT processed yet
-                    choices = [d for d in pop_dramas if str(d.get("bookId") or d.get("id") or d.get("bookid", "")) not in processed_ids]
-                    if choices:
-                        random_drama = random.choice(choices)
-                        dramas = [random_drama] # Replace queue with this random one
-                        source = "microdrama" # Popular search comes from MicroDrama
-                        all_processed = False
-                        logger.info(f"🎲 Random popular picked: {random_drama.get('title')} ({str(random_drama.get('bookId') or random_drama.get('id'))})")
-                    else:
-                        logger.info("😴 All popular search dramas are also already processed.")
-                        if all_processed: dramas = [] # Clear list
+                pop_new = [d for d in pop_dramas if str(d.get("bookId") or d.get("id") or d.get("bookid", "")) not in processed_ids]
+                if pop_new:
+                    random_drama = random.choice(pop_new)
+                    queue = [(random_drama, "microdrama")]
+                    logger.info(f"🎲 Random popular picked: {random_drama.get('title')}")
                 else:
-                    if all_processed: dramas = []
+                    logger.info("😴 No new dramas found in any source.")
             
             new_found = 0
             
-            for drama in dramas:
+            for drama, source in queue:
                 if not BotState.is_auto_running:
                     break
                     
-                # Handle different ID field names from API
                 book_id = str(drama.get("bookId") or drama.get("id") or drama.get("bookid", ""))
                 if not book_id:
                     continue
                     
                 if book_id not in processed_ids:
-                    # Segera tandai database sebagai diproses (Anti Duplicate)
+                    # Segera tandai sebagai diproses
                     processed_ids.add(book_id)
                     save_processed(processed_ids)
                     
                     new_found += 1
                     title = drama.get("title") or drama.get("bookName") or drama.get("name") or "Unknown"
-                    logger.info(f"✨ Found new drama: {title} ({book_id}) via {source}. Starting process...")
+                    logger.info(f"✨ [{source.upper()}] New drama: {title} ({book_id}). Starting process...")
                     
                     # Notify admin
                     try:
