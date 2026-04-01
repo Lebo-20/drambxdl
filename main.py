@@ -3,6 +3,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+import random
 from telethon import TelegramClient, events, Button
 from dotenv import load_dotenv
 
@@ -222,13 +223,38 @@ async def auto_mode_loop():
             interval = 5 if is_initial_run else 15 # Check every 15 mins after first run
             logger.info(f"🔍 Scanning for new dramas (Next scan in {interval}m)...")
             
-            # Step 1: Check Latest Discovery Endpoints (latest, foryou, homepage)
+            # Step 1: Check Latest Discovery Endpoints (latest)
             dramas = await get_latest_dramas(pages=3 if is_initial_run else 1) or []
             
-            # Step 2: If nothing new found, try POPULAR as fallback
-            if not dramas:
-                logger.info("🔎 No news found. Trying Popular Search fallback...")
-                dramas = await get_latest_dramas(pages=1, types=["populersearch"]) or []
+            # Step 2: Check if all dramas are already processed
+            all_processed = True
+            if dramas:
+                for d in dramas:
+                    bid = str(d.get("bookId") or d.get("id") or d.get("bookid", ""))
+                    if bid and bid not in processed_ids:
+                        all_processed = False
+                        break
+            
+            # If nothing new found OR list is empty, try Popular Search Random Fill
+            if not dramas or (all_processed and not is_initial_run):
+                if all_processed and dramas:
+                    logger.info("ℹ️ Latest dramas already uploaded. Fetching Popular Search fallback...")
+                else:
+                    logger.info("🔎 No dramas found. Trying Popular Search fallback...")
+                    
+                pop_dramas = await get_latest_dramas(pages=1, types=["populersearch"]) or []
+                if pop_dramas:
+                    # Filter only the ones NOT processed yet
+                    choices = [d for d in pop_dramas if str(d.get("bookId") or d.get("id") or d.get("bookid", "")) not in processed_ids]
+                    if choices:
+                        random_drama = random.choice(choices)
+                        dramas = [random_drama] # Replace queue with this random one
+                        logger.info(f"🎲 Random popular picked: {random_drama.get('title')} ({str(random_drama.get('bookId') or random_drama.get('id'))})")
+                    else:
+                        logger.info("😴 All popular search dramas are also already processed.")
+                        if all_processed: dramas = [] # Clear if we had only processed ones
+                else:
+                    if all_processed: dramas = []
                 
             new_found = 0
             

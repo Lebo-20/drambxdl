@@ -34,7 +34,7 @@ async def get_all_episodes(book_id: str):
         return detail["episodes"]
     return []
 
-async def get_latest_dramas(pages=1):
+async def get_latest_dramas(pages=1, types=None):
     """Tries to find new dramas from verified API endpoints."""
     all_dramas = []
     
@@ -47,6 +47,9 @@ async def get_latest_dramas(pages=1):
                 "page": page,
                 "limit": 20
             }
+            if types and isinstance(types, list) and len(types) > 0:
+                params["type"] = types[0]
+                
             try:
                 response = await client.get(url, params=params)
                 if response.status_code == 200:
