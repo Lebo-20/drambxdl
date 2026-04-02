@@ -140,7 +140,7 @@ async def get_popular_search():
             return []
 
 async def get_homepage_dramas(page=1):
-    """Fetches dramas from the homepage."""
+    """Fetches dramas from the homepage sections."""
     url = f"{BASE_URL}/homepage"
     params = {
         "page": page,
@@ -152,9 +152,18 @@ async def get_homepage_dramas(page=1):
             response = await client.get(url, params=params)
             if response.status_code == 200:
                 data = response.json()
-                if isinstance(data, list): return data
-                if data.get("success") and "data" in data:
-                    return data["data"]
+                if isinstance(data, list):
+                    return data
+                
+                # If it's a dict with sections
+                all_home = []
+                if isinstance(data, dict):
+                    # Combine common sections
+                    for key in ['topList', 'recommendList', 'hotList', 'data']:
+                        section = data.get(key, [])
+                        if isinstance(section, list):
+                            all_home.extend(section)
+                return all_home
             return []
         except Exception as e:
             logger.error(f"Error fetching homepage: {e}")

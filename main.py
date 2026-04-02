@@ -12,7 +12,8 @@ load_dotenv()
 # Local imports
 from api import (
     get_drama_detail, get_all_episodes, get_latest_dramas,
-    get_dubbed_dramas, get_foryou_dramas, get_popular_search
+    get_dubbed_dramas, get_foryou_dramas, get_popular_search,
+    get_homepage_dramas
 )
 from downloader import download_all_episodes
 from merge import merge_episodes
@@ -181,6 +182,9 @@ async def auto_mode_loop():
             
             foryou = await get_foryou_dramas() or []
             queue.extend([(d, "FOR YOU") for d in foryou])
+            
+            home = await get_homepage_dramas() or []
+            queue.extend([(d, "HOMEPAGE") for d in home])
             
             popular = await get_popular_search() or []
             if isinstance(popular, list):
