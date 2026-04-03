@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+*.session
+*.db
+processed.json
+check_api_sections.py
+debug_api.py
+debug_foryou.py
+/tmp/

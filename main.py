@@ -13,11 +13,12 @@ load_dotenv()
 from api import (
     get_drama_detail, get_all_episodes, get_latest_dramas,
     get_dubbed_dramas, get_foryou_dramas, get_popular_search,
-    get_homepage_dramas
+    get_homepage_dramas, search_dramas
 )
 from downloader import download_all_episodes
 from merge import merge_episodes
 from uploader import upload_drama
+from database import db
 
 # Configuration
 API_ID = int(os.environ.get("API_ID", "0"))
@@ -25,28 +26,9 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID))
-PROCESSED_FILE = "processed.json"
-
-# State
-processed_ids = set()
-
-def load_processed():
-    global processed_ids
-    if os.path.exists(PROCESSED_FILE):
-        import json
-        try:
-            with open(PROCESSED_FILE, "r") as f:
-                processed_ids = set(json.load(f))
-        except:
-            processed_ids = set()
-
-def save_processed(data):
-    import json
-    with open(PROCESSED_FILE, "w") as f:
-        json.dump(list(data), f)
 
 # Initialize logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Bot State
@@ -61,63 +43,132 @@ def get_panel_buttons():
     status_text = "🟢 RUNNING" if BotState.is_auto_running else "🔴 STOPPED"
     return [
         [Button.inline("▶️ Start Auto", b"start_auto"), Button.inline("⏹ Stop Auto", b"stop_auto")],
-        [Button.inline(f"📊 Status: {status_text}", b"status")]
+        [Button.inline(f"📊 Status: {status_text}", b"status")],
+        [Button.inline("📂 Browse Content", b"menu_main")]
     ]
 
-# Event Handlers (Will be registered on main initialization)
+def get_category_buttons():
+    return [
+        [Button.inline("❤️ For You", b"cat_foryou"), Button.inline("🆕 Latest", b"cat_latest")],
+        [Button.inline("🎙 Dubbed", b"cat_dubbed"), Button.inline("🏠 Discovery", b"cat_home")],
+        [Button.inline("🔙 Back to Panel", b"menu_back")]
+    ]
+
+# Event Handlers
 async def setup_handlers(c):
     @c.on(events.NewMessage(pattern='/panel'))
     async def panel_handler(event):
         if event.chat_id != ADMIN_ID: return
-        await event.reply("🎛 **Dramabox Control Panel**", buttons=get_panel_buttons())
+        await event.reply("🎛 **Dramabox Control Panel**\nControl the automation and browse content.", buttons=get_panel_buttons())
+
+    @c.on(events.NewMessage(pattern='/menu'))
+    async def menu_handler(event):
+        if event.chat_id != ADMIN_ID: return
+        await event.reply("📂 **Pilih Kategori Konten**\nAmbil konten terbaru dari Dramabox:", buttons=get_category_buttons())
+
+    @c.on(events.NewMessage(pattern=r'/cari (.+)'))
+    async def search_handler(event):
+        if event.chat_id != ADMIN_ID: return
+        query = event.pattern_match.group(1)
+        wait = await event.reply(f"🔍 Searching for `{query}`...")
+        
+        results = await search_dramas(query)
+        if not results:
+            await wait.edit(f"❌ No results found for `{query}`.")
+            return
+            
+        text = f"🔍 **Search Results for:** `{query}`\n\n"
+        buttons = []
+        for i, d in enumerate(results[:10]):
+            title = d.get("title") or d.get("bookName") or "Unknown"
+            bid = d.get("bookId") or d.get("id")
+            text += f"{i+1}. **{title}** (`{bid}`)\n"
+            buttons.append([Button.inline(f"📥 Download: {title[:20]}...", f"dl_{bid}".encode())])
+        
+        await wait.edit(text, buttons=buttons)
 
     @c.on(events.CallbackQuery())
     async def callback_handler(event):
         if event.sender_id != ADMIN_ID: return
         data = event.data
+        
         if data == b"start_auto":
             BotState.is_auto_running = True
             await event.answer("Auto-mode started!")
             await event.edit("🎛 **Dramabox Control Panel**", buttons=get_panel_buttons())
+        
         elif data == b"stop_auto":
             BotState.is_auto_running = False
             await event.answer("Auto-mode stopped!")
             await event.edit("🎛 **Dramabox Control Panel**", buttons=get_panel_buttons())
+            
         elif data == b"status":
             await event.answer(f"Status: {'Running' if BotState.is_auto_running else 'Stopped'}")
-            await event.edit("🎛 **Dramabox Control Panel**", buttons=get_panel_buttons())
+            
+        elif data == b"menu_main" or data == b"menu_back":
+            await event.edit("📂 **Pilih Kategori Konten**", buttons=get_category_buttons())
+
+        elif data.startswith(b"cat_"):
+            cat = data.decode().split("_")[1]
+            await event.answer(f"Fetching {cat}...")
+            
+            items = []
+            if cat == "foryou": items = await get_foryou_dramas()
+            elif cat == "latest": items = await get_latest_dramas()
+            elif cat == "dubbed": items = await get_dubbed_dramas()
+            elif cat == "home": items = await get_homepage_dramas()
+            
+            if not items:
+                await event.edit(f"❌ No content found in **{cat.upper()}**.", buttons=get_category_buttons())
+                return
+                
+            text = f"📂 **Category: {cat.upper()}**\n\n"
+            buttons = []
+            for i, d in enumerate(items[:8]):
+                title = d.get("title") or d.get("bookName") or "Unknown"
+                bid = d.get("bookId") or d.get("id")
+                text += f"{i+1}. **{title}** (`{bid}`)\n"
+                buttons.append([Button.inline(f"📥 Download: {title[:20]}...", f"dl_{bid}".encode())])
+            
+            buttons.append([Button.inline("🔙 Back", b"menu_back")])
+            await event.edit(text, buttons=buttons)
+
+        elif data.startswith(b"dl_"):
+            bid = data.decode().split("_")[1]
+            if BotState.is_processing:
+                await event.answer("⚠️ Bot is busy!", alert=True)
+                return
+            
+            await event.answer("Starting download...")
+            status_msg = await event.respond(f"⏳ Initializing download for `{bid}`...")
+            
+            BotState.is_processing = True
+            try:
+                success = await process_drama_full(bid, event.chat_id, status_msg)
+                if success:
+                    db.mark_processed(bid, "Manual Download")
+            finally:
+                BotState.is_processing = False
 
     @c.on(events.NewMessage(pattern='/start'))
     async def start_handler(event):
-        await event.reply("Welcome to Dramabox Downloader Bot! 🎉\n\nGunakan perintah `/download {bookId}` untuk mulai.")
+        await event.reply("Welcome to Dramabox Downloader Bot! 🎉\n\nCommands:\n- `/panel` : Admin Control Panel\n- `/menu` : Browse Categories\n- `/cari {query}` : Search Drama\n- `/download {id}` : Direct Download")
 
     @c.on(events.NewMessage(pattern=r'/download (\d+)'))
     async def download_handler(event):
         if event.chat_id != ADMIN_ID: return
         if BotState.is_processing:
-            await event.reply("⚠️ Sedang memproses drama lain. Tunggu hingga selesai.")
+            await event.reply("⚠️ Sedang memproses drama lain.")
             return
             
-        book_id = event.pattern_match.group(1)
-        detail = await get_drama_detail(book_id)
-        if not detail:
-            await event.reply(f"❌ Gagal mendapatkan detail drama `{book_id}`.")
-            return
-            
-        episodes = await get_all_episodes(book_id)
-        if not episodes:
-            await event.reply(f"❌ Drama `{book_id}` tidak memiliki episode.")
-            return
-            
-        title = detail.get("title") or detail.get("bookName") or f"Drama_{book_id}"
-        status_msg = await event.reply(f"🎬 Drama: **{title}**\n📽 Episodes: {len(episodes)}\n⏳ Memproses...")
+        bid = event.pattern_match.group(1)
+        status_msg = await event.reply(f"⏳ Memulai proses `{bid}`...")
         
         BotState.is_processing = True
-        processed_ids.add(book_id)
-        save_processed(processed_ids)
-        
-        await process_drama_full(book_id, event.chat_id, status_msg)
-        BotState.is_processing = False
+        try:
+            await process_drama_full(bid, event.chat_id, status_msg)
+        finally:
+            BotState.is_processing = False
 
 async def process_drama_full(book_id, chat_id, status_msg=None):
     detail = await get_drama_detail(book_id)
@@ -138,13 +189,13 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
         if status_msg: await status_msg.edit(f"🎬 Processing **{title}**...")
         success = await download_all_episodes(episodes, video_dir)
         if not success:
-            if status_msg: await status_msg.edit("❌ Download Gagal.")
+            if status_msg: await status_msg.edit(f"❌ Download Gagal: **{title}**")
             return False
 
         output_video_path = os.path.join(temp_dir, f"{title}.mp4")
         merge_success = merge_episodes(video_dir, output_video_path)
         if not merge_success:
-            if status_msg: await status_msg.edit("❌ Merge Gagal.")
+            if status_msg: await status_msg.edit(f"❌ Merge Gagal: **{title}**")
             return False
 
         upload_success = await upload_drama(client, chat_id, title, description, poster, output_video_path)
@@ -152,10 +203,11 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
             if status_msg: await status_msg.delete()
             return True
         else:
-            if status_msg: await status_msg.edit("❌ Upload Gagal.")
+            if status_msg: await status_msg.edit(f"❌ Upload Gagal: **{title}**")
             return False
     except Exception as e:
         logger.error(f"Error processing {book_id}: {e}")
+        if status_msg: await status_msg.edit(f"❌ Error: {str(e)[:100]}")
         return False
     finally:
         if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
@@ -168,58 +220,59 @@ async def auto_mode_loop():
             await asyncio.sleep(10)
             continue
         try:
-            interval = 5 if is_initial_run else 15
-            logger.info("🔍 Scanning for new dramas...")
+            interval = 5 if is_initial_run else 20
+            logger.info("🔍 Scanning sections for new dramas...")
             
-            queue = []
+            categories = [
+                (get_latest_dramas, "LATEST"),
+                (get_dubbed_dramas, "DUBBED"),
+                (get_foryou_dramas, "FOR YOU"),
+                (get_homepage_dramas, "HOMEPAGE"),
+                (get_popular_search, "POPULAR")
+            ]
             
-            # Categories
-            latest = await get_latest_dramas() or []
-            queue.extend([(d, "LATEST") for d in latest])
-            
-            dubbed = await get_dubbed_dramas() or []
-            queue.extend([(d, "DUBBED") for d in dubbed])
-            
-            foryou = await get_foryou_dramas() or []
-            queue.extend([(d, "FOR YOU") for d in foryou])
-            
-            home = await get_homepage_dramas() or []
-            queue.extend([(d, "HOMEPAGE") for d in home])
-            
-            popular = await get_popular_search() or []
-            if isinstance(popular, list):
-                queue.extend([(d, "POPULAR") for d in popular])
-            elif popular:
-                queue.append((popular, "POPULAR"))
-            
-            new_queue = []
-            for d, cat in queue:
-                bid = str(d.get("bookId") or d.get("id") or "")
-                if bid and bid not in processed_ids:
-                    new_queue.append((d, cat))
-            
-            if not new_queue:
-                logger.info("😴 No new dramas.")
-            else:
-                for drama, cat in new_queue:
+            for func, cat_name in categories:
+                if not BotState.is_auto_running: break
+                
+                try:
+                    items = await func()
+                except:
+                    continue
+                    
+                if not items: continue
+                if not isinstance(items, list): items = [items]
+                
+                for item in items:
                     if not BotState.is_auto_running: break
-                    bid = str(drama.get("bookId") or drama.get("id") or "")
-                    processed_ids.add(bid)
-                    save_processed(processed_ids)
                     
-                    title = drama.get("title") or drama.get("bookName") or "Unknown"
-                    logger.info(f"✨ [{cat}] New: {title} ({bid})")
+                    bid = str(item.get("bookId") or item.get("id") or "")
+                    title = item.get("title") or item.get("bookName") or "Unknown"
                     
+                    if not bid: continue
+                    
+                    # Deduplication using Database
+                    if db.is_processed(bid, title):
+                        continue
+                        
+                    logger.info(f"✨ [{cat_name}] New: {title} ({bid})")
+                    
+                    # Notify Admin
                     try: 
-                        await client.send_message(ADMIN_ID, f"🆕 **Auto-Detected!**\n🎬 `[{cat}] {title}`\n🆔 `{bid}`")
+                        await client.send_message(ADMIN_ID, f"🆕 **Auto-Detected!**\n🎬 `[{cat_name}] {title}`\n🆔 `{bid}`")
                     except: pass
                     
+                    # Process
                     BotState.is_processing = True
-                    await process_drama_full(bid, AUTO_CHANNEL)
+                    success = await process_drama_full(bid, AUTO_CHANNEL)
                     BotState.is_processing = False
-                    await asyncio.sleep(10)
+                    
+                    if success:
+                        db.mark_processed(bid, title)
+                    
+                    await asyncio.sleep(15) # Wait between uploads
             
             is_initial_run = False
+            # Wait for next scan
             for _ in range(interval * 60):
                 if not BotState.is_auto_running: break
                 await asyncio.sleep(1)
@@ -230,7 +283,6 @@ async def auto_mode_loop():
 async def start_bot():
     global client
     logger.info("Initializing Dramabox Bot...")
-    load_processed()
     
     client = TelegramClient('dramabox_bot', API_ID, API_HASH)
     await client.start(bot_token=BOT_TOKEN)
@@ -248,6 +300,6 @@ if __name__ == '__main__':
     try:
         asyncio.run(start_bot())
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user.")
+        logger.info("Bot stopped.")
     except Exception as e:
         logger.error(f"FATAL ERROR: {e}")
