@@ -198,7 +198,7 @@ async def process_drama_full(book_id, chat_id, status_msg=None, topic_id=None):
 
     title = detail.get("title") or detail.get("bookName") or f"Drama_{book_id}"
     description = detail.get("intro") or detail.get("introduction") or "No description."
-    poster = detail.get("cover") or detail.get("coverWap") or ""
+    poster = detail.get("bookCover") or detail.get("cover") or detail.get("coverWap") or ""
     
     temp_dir = tempfile.mkdtemp(prefix=f"dramabox_{book_id}_")
     video_dir = os.path.join(temp_dir, "episodes")
@@ -262,6 +262,7 @@ async def perform_scan(is_manual=False, status_msg=None):
             
             bid = str(item.get("bookId") or item.get("id") or "")
             title = item.get("title") or item.get("bookName") or "Unknown"
+            poster = item.get("bookCover") or item.get("cover") or item.get("coverWap") or ""
             
             if not bid: continue
             
