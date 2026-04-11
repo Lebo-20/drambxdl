@@ -32,6 +32,7 @@ async def upload_drama(client: TelegramClient, chat_id: int,
     poster_msg = None
     poster_path = None
     status_msg = None
+    thumb_path = None
     
     try:
         # 1. Send Poster + Description as PHOTO
@@ -47,14 +48,22 @@ async def upload_drama(client: TelegramClient, chat_id: int,
         except Exception as e:
             logger.warning(f"Failed to download poster: {e}")
         
-        # Send as visible photo and keep the message object
-        poster_msg = await client.send_file(
-            chat_id,
-            poster_path or poster_url,
-            caption=caption,
-            parse_mode='md',
-            reply_to=topic_id
-        )
+        # Send as visible photo if available, otherwise just text
+        if poster_path or (poster_url and (poster_url.startswith('http') or os.path.exists(poster_url))):
+            poster_msg = await client.send_file(
+                chat_id,
+                poster_path or poster_url,
+                caption=caption,
+                parse_mode='md',
+                reply_to=topic_id
+            )
+        else:
+            poster_msg = await client.send_message(
+                chat_id,
+                caption,
+                parse_mode='md',
+                reply_to=topic_id
+            )
         
         # Cleanup poster temp file
         if poster_path and os.path.exists(poster_path):
