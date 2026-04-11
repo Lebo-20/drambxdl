@@ -19,6 +19,7 @@ async def upload_progress(current, total, event, msg_text="Uploading..."):
 async def upload_drama(client: TelegramClient, chat_id: int, 
                        title: str, description: str, 
                        poster_url: str, video_path: str,
+                       topic_id: int = None,
                        max_retries: int = 3):
     """
     Uploads the drama information and merged video to Telegram.
@@ -51,7 +52,8 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             chat_id,
             poster_path or poster_url,
             caption=caption,
-            parse_mode='md'
+            parse_mode='md',
+            reply_to=topic_id
         )
         
         # Cleanup poster temp file
@@ -59,7 +61,11 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             try: os.remove(poster_path)
             except: pass
         
-        status_msg = await client.send_message(chat_id, "📤 Analyzing video metadata...")
+        status_msg = await client.send_message(
+            chat_id, 
+            "📤 Analyzing video metadata...",
+            reply_to=topic_id
+        )
         
         # 2. Extract Duration & Dimensions
         duration = 0
@@ -108,7 +114,8 @@ async def upload_drama(client: TelegramClient, chat_id: int,
                     thumb=thumb_path,
                     attributes=video_attributes,
                     progress_callback=lambda c, t: upload_progress(c, t, status_msg, "Upload Progress:"),
-                    supports_streaming=True
+                    supports_streaming=True,
+                    reply_to=topic_id
                 )
                 
                 # Success!

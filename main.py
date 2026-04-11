@@ -26,6 +26,8 @@ API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID))
+TOPIC_ID = os.environ.get("TOPIC_ID")
+TOPIC_ID = int(TOPIC_ID) if TOPIC_ID else None
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -144,7 +146,7 @@ async def setup_handlers(c):
             
             BotState.is_processing = True
             try:
-                success = await process_drama_full(bid, event.chat_id, status_msg)
+                success = await process_drama_full(bid, event.chat_id, status_msg, topic_id=None)
                 if success:
                     db.mark_processed(bid, "Manual Download")
             finally:
@@ -183,11 +185,11 @@ async def setup_handlers(c):
         
         BotState.is_processing = True
         try:
-            await process_drama_full(bid, event.chat_id, status_msg)
+            await process_drama_full(bid, event.chat_id, status_msg, topic_id=None)
         finally:
             BotState.is_processing = False
 
-async def process_drama_full(book_id, chat_id, status_msg=None):
+async def process_drama_full(book_id, chat_id, status_msg=None, topic_id=None):
     detail = await get_drama_detail(book_id)
     episodes = await get_all_episodes(book_id)
     if not detail or not episodes:
@@ -215,7 +217,7 @@ async def process_drama_full(book_id, chat_id, status_msg=None):
             if status_msg: await status_msg.edit(f"❌ Merge Gagal: **{title}**")
             return False
 
-        upload_success = await upload_drama(client, chat_id, title, description, poster, output_video_path, max_retries=5)
+        upload_success = await upload_drama(client, chat_id, title, description, poster, output_video_path, topic_id=topic_id, max_retries=5)
         if upload_success:
             if status_msg: await status_msg.delete()
             return True
@@ -277,7 +279,7 @@ async def perform_scan(is_manual=False, status_msg=None):
             
             # Process
             BotState.is_processing = True
-            success = await process_drama_full(bid, AUTO_CHANNEL)
+            success = await process_drama_full(bid, AUTO_CHANNEL, topic_id=TOPIC_ID)
             BotState.is_processing = False
             
             if success:
