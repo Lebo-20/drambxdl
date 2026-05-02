@@ -1,10 +1,10 @@
 import os
-import subprocess
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
 
-def merge_episodes(video_dir: str, output_path: str):
+async def merge_episodes(video_dir: str, output_path: str):
     """
     Merges all .mp4 files in video_dir into a single output_path file.
     video_dir: Directory containing episode_.mp4 files.
@@ -30,10 +30,17 @@ def merge_episodes(video_dir: str, output_path: str):
         
         logger.info(f"Running ffmpeg merge command: {' '.join(command)}")
         
-        # Execute ffmpeg synchronously (can be wrapped in asyncio to be non-blocking)
-        process = subprocess.run(command, capture_output=True, text=True)
+        # Execute ffmpeg asynchronously to avoid blocking the event loop
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
         if process.returncode != 0:
-            logger.error(f"FFmpeg failed with error:\n{process.stderr}")
+            logger.error(f"FFmpeg failed with error:\n{stderr.decode()}")
             return False
             
         logger.info(f"Successfully merged episodes into {output_path}")

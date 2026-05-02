@@ -82,7 +82,13 @@ async def upload_drama(client: TelegramClient, chat_id: int,
         height = 0
         try:
             ffprobe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=width,height", "-of", "default=noprint_wrappers=1:nokey=1", video_path]
-            output = subprocess.check_output(ffprobe_cmd, text=True).strip().split('\n')
+            proc = await asyncio.create_subprocess_exec(
+                *ffprobe_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            output = stdout.decode().strip().split('\n')
             if len(output) >= 3:
                 width = int(output[0])
                 height = int(output[1])
@@ -93,7 +99,14 @@ async def upload_drama(client: TelegramClient, chat_id: int,
         # 3. Extract Thumbnail
         thumb_path = os.path.join(tempfile.gettempdir(), f"thumb_{os.path.basename(video_path)}.jpg")
         try:
-            subprocess.run(["ffmpeg", "-y", "-i", video_path, "-ss", "00:00:01.000", "-vframes", "1", thumb_path], capture_output=True)
+            thumb_cmd = ["ffmpeg", "-y", "-i", video_path, "-ss", "00:00:01.000", "-vframes", "1", thumb_path]
+            proc2 = await asyncio.create_subprocess_exec(
+                *thumb_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await proc2.communicate()
+            
             if not os.path.exists(thumb_path):
                 thumb_path = None
         except Exception as e:
