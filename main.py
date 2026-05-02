@@ -271,24 +271,26 @@ async def process_drama_full(book_id, chat_id, status_msg=None, topic_id=None):
     os.makedirs(video_dir, exist_ok=True)
     
     try:
-        if status_msg: await status_msg.edit(f"🎬 Processing **{title}**...")
+        if status_msg: await status_msg.edit(f"🎬 Processing **{title}**...\n📥 Downloading {len(episodes)} episodes...")
         success = await download_all_episodes(episodes, video_dir)
         if not success:
-            if status_msg: await status_msg.edit(f"❌ Download Gagal: **{title}**")
+            if status_msg: await status_msg.edit(f"❌ Download Gagal: **{title}**\nBeberapa episode tidak dapat diunduh.")
             return False
 
+        if status_msg: await status_msg.edit(f"🎬 Processing **{title}**...\n🔄 Merging episodes into one file...")
         output_video_path = os.path.join(temp_dir, f"{title}.mp4")
         merge_success = merge_episodes(video_dir, output_video_path)
         if not merge_success:
-            if status_msg: await status_msg.edit(f"❌ Merge Gagal: **{title}**")
+            if status_msg: await status_msg.edit(f"❌ Merge Gagal: **{title}**\nFile video mungkin corrupt atau tidak kompatibel.")
             return False
 
+        if status_msg: await status_msg.edit(f"🎬 Processing **{title}**...\n📤 Uploading to Telegram...")
         upload_success = await upload_drama(client, chat_id, title, description, poster, output_video_path, topic_id=topic_id, max_retries=5)
         if upload_success:
             if status_msg: await status_msg.delete()
             return True
         else:
-            if status_msg: await status_msg.edit(f"❌ Upload Gagal: **{title}**")
+            if status_msg: await status_msg.edit(f"❌ Upload Gagal: **{title}**\nKoneksi terputus atau file terlalu besar.")
             return False
     except asyncio.CancelledError:
         logger.info(f"Process for {book_id} was cancelled.")
@@ -377,6 +379,18 @@ async def perform_scan(is_manual=False, status_msg=None):
             
             if success:
                 db.mark_processed(bid, title)
+                if not is_manual:
+                    cooldown = 3600 # 1 Hour in seconds
+                    logger.info(f"✅ Success! Auto-mode cooling down for 1 hour...")
+                    try:
+                        await client.send_message(ADMIN_ID, f"✅ **Berhasil Upload!**\n🎬 `{title}`\n\n💤 **Auto Cooldown:** 1 Jam.\nBot akan lanjut otomatis setelah istirahat.")
+                    except: pass
+                    
+                    # Sleep for 1 hour, but check if auto is still running
+                    for _ in range(cooldown):
+                        if not BotState.is_auto_running or BotState.is_paused_for_manual:
+                            break
+                        await asyncio.sleep(1)
             else:
                 logger.error(f"❌ Auto-process failed for {title} ({bid}). Reporting failure and stopping scan.")
                 db.report_failure(bid)
@@ -384,7 +398,11 @@ async def perform_scan(is_manual=False, status_msg=None):
                 if not is_manual:
                     return # Stop the entire scan
             
-            await asyncio.sleep(15) # Wait between uploads
+            if is_manual:
+                await asyncio.sleep(5) # Short sleep for manual
+            else:
+                # If we are here, it means we didn't success (or cooldown was broken)
+                await asyncio.sleep(15)
             
     if is_manual and status_msg:
         if total_found > 0:
