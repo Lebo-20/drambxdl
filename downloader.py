@@ -5,18 +5,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def download_file(url: str, path: str, ep_num: str):
-    """Downloads a file using FFmpeg to handle both direct MP4 and HLS streams."""
+    """Downloads a file using aria2c for direct files or FFmpeg for HLS streams."""
     try:
-        command = [
-            "ffmpeg", "-y",
-            "-loglevel", "error",
-            "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
-            "-allowed_extensions", "ALL",
-            "-i", url,
-            "-c", "copy",
-            "-bsf:a", "aac_adtstoasc",
-            path
-        ]
+        is_hls = ".m3u8" in url.split('?')[0]
+        
+        if is_hls:
+            # Use FFmpeg for HLS streams
+            command = [
+                "ffmpeg", "-y",
+                "-loglevel", "error",
+                "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+                "-allowed_extensions", "ALL",
+                "-i", url,
+                "-c", "copy",
+                "-bsf:a", "aac_adtstoasc",
+                path
+            ]
+        else:
+            # Use aria2c for direct files (faster multi-connection)
+            command = [
+                "aria2c", "--quiet=true",
+                "--max-connection-per-server=16",
+                "--split=16",
+                "--min-split-size=1M",
+                "--dir=" + os.path.dirname(path),
+                "--out=" + os.path.basename(path),
+                url
+            ]
         
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -27,7 +42,7 @@ async def download_file(url: str, path: str, ep_num: str):
         stdout, stderr = await process.communicate()
         
         if process.returncode != 0:
-            logger.error(f"FFmpeg download failed for episode {ep_num}: {stderr.decode()}")
+            logger.error(f"Download failed for episode {ep_num} using {'FFmpeg' if is_hls else 'aria2c'}: {stderr.decode()}")
             return False
             
         return True
