@@ -37,9 +37,47 @@ logger = logging.getLogger(__name__)
 class BotState:
     is_auto_running = True
     is_processing = False
+    processing_type = None # "auto" or "manual"
+    current_task = None    # Store the current running task
+    is_paused_for_manual = False
 
 # Initialize client placeholder
 client = None
+
+async def interrupt_auto_if_running():
+    """Interrupts auto process if it's currently running."""
+    if BotState.is_processing and BotState.processing_type == "auto" and BotState.current_task:
+        logger.info("⚠️ Interrupting auto process for manual command...")
+        BotState.current_task.cancel()
+        try:
+            await BotState.current_task
+        except asyncio.CancelledError:
+            logger.info("✅ Auto process cancelled successfully.")
+        except Exception as e:
+            logger.error(f"Error while cancelling auto process: {e}")
+        finally:
+            BotState.is_processing = False
+            BotState.processing_type = None
+            BotState.current_task = None
+
+async def start_manual_process():
+    """Pauses auto mode and interrupts any active auto task."""
+    if BotState.is_auto_running:
+        logger.info("⏸ Pausing auto mode for manual task...")
+        BotState.is_auto_running = False
+        BotState.is_paused_for_manual = True
+    
+    await interrupt_auto_if_running()
+    
+    # Wait a bit to ensure everything is settled
+    await asyncio.sleep(1)
+
+async def end_manual_process():
+    """Resumes auto mode if it was paused."""
+    if BotState.is_paused_for_manual:
+        logger.info("▶️ Resuming auto mode after manual task...")
+        BotState.is_auto_running = True
+        BotState.is_paused_for_manual = False
 
 def get_panel_buttons():
     status_text = "🟢 RUNNING" if BotState.is_auto_running else "🔴 STOPPED"
@@ -58,36 +96,48 @@ def get_category_buttons():
 
 # Event Handlers
 async def setup_handlers(c):
-    @c.on(events.NewMessage(pattern='/panel'))
+    @c.on(events.NewMessage(pattern='/dramabox panel'))
     async def panel_handler(event):
         if event.chat_id != ADMIN_ID: return
         await event.reply("🎛 **Dramabox Control Panel**\nControl the automation and browse content.", buttons=get_panel_buttons())
 
-    @c.on(events.NewMessage(pattern='/menu'))
+    @c.on(events.NewMessage(pattern='/dramabox menu'))
     async def menu_handler(event):
         if event.chat_id != ADMIN_ID: return
         await event.reply("📂 **Pilih Kategori Konten**\nAmbil konten terbaru dari Dramabox:", buttons=get_category_buttons())
 
-    @c.on(events.NewMessage(pattern=r'/cari (.+)'))
+    @c.on(events.NewMessage(pattern=r'/dramabox cari (.+)'))
     async def search_handler(event):
         if event.chat_id != ADMIN_ID: return
         query = event.pattern_match.group(1)
+        
+        # Stop auto before searching if needed (user might just be searching, but usually search leads to download)
+        # But let's only stop when download starts to be less intrusive.
+        # Actually, user said "cari / download dan auto", so maybe search should also stop auto?
+        # Let's stick to stop when download starts for better UX, or stop now as requested.
+        await start_manual_process()
+        
         wait = await event.reply(f"🔍 Searching for `{query}`...")
         
-        results = await search_dramas(query)
-        if not results:
-            await wait.edit(f"❌ No results found for `{query}`.")
-            return
+        try:
+            results = await search_dramas(query)
+            if not results:
+                await wait.edit(f"❌ No results found for `{query}`.")
+                await end_manual_process()
+                return
+                
+            text = f"🔍 **Search Results for:** `{query}`\n\n"
+            buttons = []
+            for i, d in enumerate(results[:10]):
+                title = d.get("title") or d.get("bookName") or "Unknown"
+                bid = d.get("bookId") or d.get("id")
+                text += f"{i+1}. **{title}** (`{bid}`)\n"
+                buttons.append([Button.inline(f"📥 Download: {title[:20]}...", f"dl_{bid}".encode())])
             
-        text = f"🔍 **Search Results for:** `{query}`\n\n"
-        buttons = []
-        for i, d in enumerate(results[:10]):
-            title = d.get("title") or d.get("bookName") or "Unknown"
-            bid = d.get("bookId") or d.get("id")
-            text += f"{i+1}. **{title}** (`{bid}`)\n"
-            buttons.append([Button.inline(f"📥 Download: {title[:20]}...", f"dl_{bid}".encode())])
-        
-        await wait.edit(text, buttons=buttons)
+            await wait.edit(text, buttons=buttons)
+        except Exception as e:
+            await wait.edit(f"❌ Error during search: {e}")
+            await end_manual_process()
 
     @c.on(events.CallbackQuery())
     async def callback_handler(event):
@@ -137,28 +187,38 @@ async def setup_handlers(c):
 
         elif data.startswith(b"dl_"):
             bid = data.decode().split("_")[1]
+            
+            # Ensure auto is stopped and current auto task is killed
+            await start_manual_process()
+            
             if BotState.is_processing:
-                await event.answer("⚠️ Bot is busy!", alert=True)
+                await event.answer("⚠️ Bot is busy with another manual task!", alert=True)
                 return
             
             await event.answer("Starting download...")
             status_msg = await event.respond(f"⏳ Initializing download for `{bid}`...")
             
             BotState.is_processing = True
+            BotState.processing_type = "manual"
             try:
                 success = await process_drama_full(bid, event.chat_id, status_msg, topic_id=None)
-                if success:
-                    db.mark_processed(bid, "Manual Download")
+                # Note: Manual downloads are NOT recorded in DB as per user request
             finally:
                 BotState.is_processing = False
+                BotState.processing_type = None
+                await end_manual_process()
 
-    @c.on(events.NewMessage(pattern='/new'))
+    @c.on(events.NewMessage(pattern='/dramabox new'))
     async def update_command_handler(event):
         if event.chat_id != ADMIN_ID: return
+        await start_manual_process()
         status_msg = await event.reply("🔄 **Starting manual update...**\nFetching all categories...")
-        await perform_scan(is_manual=True, status_msg=status_msg)
+        try:
+            await perform_scan(is_manual=True, status_msg=status_msg)
+        finally:
+            await end_manual_process()
 
-    @c.on(events.NewMessage(pattern='/db'))
+    @c.on(events.NewMessage(pattern='/dramabox db'))
     async def db_handler(event):
         if event.chat_id != ADMIN_ID: return
         total, latest = db.get_stats()
@@ -169,25 +229,31 @@ async def setup_handlers(c):
             text += f"{i+1}. {title} ({time})\n"
         await event.reply(text)
 
-    @c.on(events.NewMessage(pattern='/start'))
+    @c.on(events.NewMessage(pattern=r'/(start|dramabox start)'))
     async def start_handler(event):
-        await event.reply("Welcome to Dramabox Downloader Bot! 🎉\n\nCommands:\n- `/panel` : Admin Control Panel\n- `/menu` : Browse Categories\n- `/cari {query}` : Search Drama\n- `/new` : Manual content scan\n- `/download {id}` : Direct Download\n- `/db` : View uploaded database")
+        await event.reply("Welcome to Dramabox Downloader Bot! 🎉\n\nCommands:\n- `/dramabox panel` : Admin Control Panel\n- `/dramabox menu` : Browse Categories\n- `/dramabox cari {query}` : Search Drama\n- `/dramabox new` : Manual content scan\n- `/dramabox download {id}` : Direct Download\n- `/dramabox db` : View uploaded database")
 
-    @c.on(events.NewMessage(pattern=r'/download (\d+)'))
+    @c.on(events.NewMessage(pattern=r'/dramabox download (\d+)'))
     async def download_handler(event):
         if event.chat_id != ADMIN_ID: return
+        
+        await start_manual_process()
+        
         if BotState.is_processing:
-            await event.reply("⚠️ Sedang memproses drama lain.")
+            await event.reply("⚠️ Bot is busy with another manual task.")
             return
             
         bid = event.pattern_match.group(1)
         status_msg = await event.reply(f"⏳ Memulai proses `{bid}`...")
         
         BotState.is_processing = True
+        BotState.processing_type = "manual"
         try:
             await process_drama_full(bid, event.chat_id, status_msg, topic_id=None)
         finally:
             BotState.is_processing = False
+            BotState.processing_type = None
+            await end_manual_process()
 
 async def process_drama_full(book_id, chat_id, status_msg=None, topic_id=None):
     detail = await get_drama_detail(book_id)
@@ -224,12 +290,19 @@ async def process_drama_full(book_id, chat_id, status_msg=None, topic_id=None):
         else:
             if status_msg: await status_msg.edit(f"❌ Upload Gagal: **{title}**")
             return False
+    except asyncio.CancelledError:
+        logger.info(f"Process for {book_id} was cancelled.")
+        raise
     except Exception as e:
         logger.error(f"Error processing {book_id}: {e}")
         if status_msg: await status_msg.edit(f"❌ Error: {str(e)[:100]}")
         return False
     finally:
-        if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
+        if os.path.exists(temp_dir): 
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
 
 async def perform_scan(is_manual=False, status_msg=None):
     """Core scanning logic for all categories."""
@@ -266,8 +339,12 @@ async def perform_scan(is_manual=False, status_msg=None):
             
             if not bid: continue
             
-            # Deduplication using Database
+            # Deduplication & Skip Logic using Database
             if db.is_processed(bid, title):
+                continue
+                
+            if db.is_skipped(bid):
+                logger.warning(f"⏩ Skipping {title} ({bid}) due to previous failures.")
                 continue
                 
             total_found += 1
@@ -280,11 +357,32 @@ async def perform_scan(is_manual=False, status_msg=None):
             
             # Process
             BotState.is_processing = True
-            success = await process_drama_full(bid, AUTO_CHANNEL, topic_id=TOPIC_ID)
-            BotState.is_processing = False
+            BotState.processing_type = "auto"
+            
+            # Wrap the process in a task so it can be cancelled
+            BotState.current_task = asyncio.create_task(process_drama_full(bid, AUTO_CHANNEL, topic_id=TOPIC_ID))
+            
+            try:
+                success = await BotState.current_task
+            except asyncio.CancelledError:
+                logger.warning(f"Auto-process for {bid} was cancelled mid-way.")
+                break 
+            except Exception as e:
+                logger.error(f"Auto-process error for {bid}: {e}")
+                success = False
+            finally:
+                BotState.is_processing = False
+                BotState.processing_type = None
+                BotState.current_task = None
             
             if success:
                 db.mark_processed(bid, title)
+            else:
+                logger.error(f"❌ Auto-process failed for {title} ({bid}). Reporting failure and stopping scan.")
+                db.report_failure(bid)
+                # "jika ada video yang gagal maka akan auto stop proses"
+                if not is_manual:
+                    return # Stop the entire scan
             
             await asyncio.sleep(15) # Wait between uploads
             
